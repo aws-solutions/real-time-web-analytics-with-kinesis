@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Web Analytics Dashboard</title>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link href="css/bootstrap.min.css" rel="stylesheet">
+        <link href="css/fontawesome.min.css" rel="stylesheet">
+        <link href="css/custom.css" rel="stylesheet">
+    </head>
+
+    <body>
+        <div class="container body">
+            <div class="main_container">
+                <nav class="navbar navbar-inverse navbar-fixed-top">
+
+                    <div class="navbar-header">
+                        <button class="navbar-toggle" type="button" data-toggle="collapse" data-target="#navbar-main">
+                            <span class="icon-bar"></span>
+                            <span class="icon-bar"></span>
+                            <span class="icon-bar"></span>
+                        </button>
+                        <a class="navbar-brand" color="black" href="#">AWS Web Analytics Solution Accelerator Dashboard</a>
+                    </div>
+
+                    <div class="navbar-collapse collapse navbar-right" id="navbar-main">
+                        <ul class="nav navbar-nav">
+                            <li>
+                                <a href="#" id="configureLink" data-toggle="modal" data-target="#cognitoModal" data-backdrop="static" data-keyboard="false">
+                                    <i class="fa fa-cog"></i> Configure</a>
+                            </li>
+                            <li>
+                                <a target="_blank" href="help.html">
+                                    <i class="fa fa-question-circle"></i> Help</a>
+                            </li>
+                            <li>
+                                <a id="signInSpinner" class="hidden">
+                                    <i class="fa fa-spinner fa-spin"></i> Signing In</a>
+                            </li>
+
+                            <li>
+                                <a id="logoutLink" class="hidden" href="#">
+                                    <i class="fa fa-sign-out"></i> Log Out</a>
+                            </li>
+
+                        </ul>
+                        <form class="navbar-form navbar-right" role="search" id="loginForm" action="#">
+                            <div class="form-group">
+                                <input type="text" class="form-control" id="userName" placeholder="Username">
+                            </div>
+                            <div class="form-group">
+                                <input type="password" class="form-control" id="password" placeholder="Password">
+                            </div>
+                            <input type="submit" class="btn btn-default" id="btnLogin" value="Sign In"></button>
+                        </form>
+                    </div>
+
+                </nav>
+
+                <div class="jumbotron" id="unauthMessage" style="padding-top: 100px">
+                    <div class="container">
+                        <h1>AWS Web Analytics Dashboard</h1>
+                        <p> Sign in to get started. If you haven't configured an Amazon Cognito user, choose
+                            <a href="https://aws.amazon.com/kinesis/">Help</a>.</p>
+                    </div>
+                </div>
+
+                <div class="modal fade" id="cognitoModal" tabindex="-1" role="dialog" aria-labelledby="myModalLabel">
+                    <div class="modal-dialog" role="document">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                                    <span aria-hidden="true">&times;</span>
+                                </button>
+                                <h4 class="modal-title" id="configurationModalLabel">Configuration</h4>
+                            </div>
+                            <div class="modal-body">
+                                <div class="alert alert-danger hidden" id="configErr">
+                                    The Dashboard is not configured correctly. Please ensure these values are set and are accurate.
+                                </div>
+
+                                <p>
+                                    These values are used by the Dashboard to validate users in your Cognito User Pool. Don't change these values unless you
+                                    know what you're doing!
+                                </p>
+                                <div id="cognitoConfig">
+                                    <form>
+                                        <div class="form-group">
+                                            <label for="userPoolId">Cognito User Pool ID</label>
+                                            <input type="text" class="form-control" id="userPoolId">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="clientId">Cognito Client ID</label>
+                                            <input type="text" class="form-control" id="clientId">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="identityPoolId">Cognito Identity Pool ID</label>
+                                            <input type="text" class="form-control" id="identityPoolId">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="userPoolRegion">User Pool Region</label>
+                                            <input type="text" class="form-control" id="userPoolRegion">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="metricsTable">Metrics Table</label>
+                                            <input type="text" class="form-control" id="metricsTable">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="metricDetailsTable">Metric Details Table</label>
+                                            <input type="text" class="form-control" id="metricDetailsTable">
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-dismiss="modal" id="btnCancelConfiguration">Cancel</button>
+                                <button type="button" class="btn btn-primary" id="btnSaveConfiguration">Save Changes</button>
+
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal fade" id="newPasswordModal" tabindex="-1" role="dialog" aria-labelledby="myModalLabel">
+                    <div class="modal-dialog" role="document">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                                    <span aria-hidden="true">&times;</span>
+                                </button>
+                                <h4 class="modal-title" id="newPasswordModalLabel">Create New Password</h4>
+                            </div>
+                            <div class="alert alert-danger hidden" id="newPasswordErr">
+                              <div class="hidden" id="newPasswordMatchErr">
+                                The passwords you entered do not match!
+                              </div>
+                              <div class="hidden" id="newPasswordComplexityErr">
+                                The password you entered does not meet the following complexity requirements:
+                                <ul>
+                                  <li id="newPasswordLengthErr" class="hidden">8 or more characters</li>
+                                  <li id="newPasswordUpperErr" class="hidden">Upper case character</li>
+                                  <li id="newPasswordLowerErr" class="hidden">Lower case character</li>
+                                  <li id="newPasswordNumberErr" class="hidden">Number</li>
+                                </ul>
+                              </div>
+                            </div>
+                            <div class="modal-body">
+                                <p>
+                                    Your temporary password must be changed! Please create a new password (8 or more characters, one of which must be
+                                    uppercase, lowercase, and a number).
+                                </p>
+                                <div id="newPasswordConfig">
+                                    <form id="newPasswordForm" action="#">
+                                        <div class="form-group">
+                                            <label for="newPassword">Enter new password:</label>
+                                            <input type="password" class="form-control" id="newPassword">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="newPassword2">Reenter password:</label>
+                                            <input type="password" class="form-control" id="newPassword2">
+                                        </div>
+                                        <div class="form-group">
+                                            <input type="submit" class="btn btn-primary" id="btnSavePassword" value="Submit">
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+
+
+                <div class="right_col hidden" id="dashboard_content" role="main">
+                    <div class="row aws-pt-s">
+                        <div class="col-xs-10 col-xs-offset-1 col-xs-12">
+                            <div class="x_title">
+                                <h3>Total number of API calls</h3>
+                            </div>
+                            <div class="col-xs-12 tile_stats_count text-center aws-mb-l">
+                                <div class="count_top" id="A_count">
+                                    <h2 id="visitor_count" ts="0">Visistor Count: 0</h2>
+                                </div>
+                                <span class="count_top">
+                                    <span id="last_updated">Last Updated:
+                                        <h2></h2>
+                                    </span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-5 col-md-offset-1 col-xs-12 aws-mb-l">
+                            <div class="x_title">
+                                <h3>Events Per Hour</h3>
+                                <div class="clearfix"></div>
+                            </div>
+                            <div class="x_content">
+                                <canvas id="hourly_events" ts="0"></canvas>
+                                <div class="clearfix"></div>
+                            </div>
+                        </div>
+                        <div class="col-md-5 col-xs-12">
+                            <div class="x_title">
+                                <div>
+                                    <h3>Latest Anomaly Detected
+                                        <small>event : count</small>
+                                    </h3>
+                                </div>
+                                <div class="clearfix"></div>
+                            </div>
+                            <div class="x_content">
+                                <canvas id="event_anomaly" ts="0"></canvas>
+                                <div class="clearfix"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row aws-mb-l">
+                        <div class="col-md-5 col-md-offset-1 col-xs-12">
+                            <div class="x_title">
+                                <div >
+                                    <h3>Visitor Count</h3>
+                                </div>
+                                <div class="clearfix"></div>
+                            </div>
+                            <div class="x_content">
+                                <canvas id="visitor_count_line" ts="0"></canvas>
+                                <div class="clearfix"></div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-5 col-xs-12">
+                            <div class="x_title">
+                                <h3>User Agents</h3>
+                            </div>
+                            <div class="x_content">
+                                <canvas id="agent_count" ts="0"></canvas>
+                            </div>
+                        </div>
+
+                    </div>
+                    <div class="row aws-mb-l">
+                        <div class="col-xs-10 col-xs-offset-1 col-xs-12">
+                            <div class="x_title">
+                                <h3>All Recent Events</h3>
+                            </div>
+                            <div class="x_content">
+                                <canvas id="all_events_count" ts="0"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row aws-mb-l">
+                        <div class="col-xs-10 col-xs-offset-1 col-xs-12">
+                            <div class="x_title">
+                                <h3>Recent Events</h3>
+                            </div>
+                            <div class="x_content">
+                                <canvas id="event_count" ts="0"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row aws-mb-l">
+                        <div class="col-xs-10 col-xs-offset-1 col-xs-12">
+                            <div class="x_title">
+                                <h3>Referrers</h3>
+                            </div>
+                            <div class="x_content">
+                                <canvas id="referral_count" ts="0"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row aws-mb-l">
+                        <div class="col-xs-10 col-xs-offset-1 col-xs-12">
+                            <div class="x_title">
+                                <h3>Pages</h3>
+                            </div>
+                            <div class="x_content">
+                                <canvas id="top_pages" ts="0"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script src="js/jquery-3.3.1.min.js"></script>
+        <script src="js/bootstrap.min.js"></script>
+        <script src="js/Chart.js"></script>
+        <script type="text/javascript" src="https://sdk.amazonaws.com/js/aws-sdk-2.7.20.min.js"></script>
+        <script src="js/dash.js"></script>
+        <script src="js/aws-cognito-sdk.min.js"></script>
+        <script src="js/amazon-cognito-identity.min.js"></script>
+        <script src="js/moment.min.js"></script>
+        <script src="js/app-variables.js"></script>
+        <script src="js/dashboard-use.js"></script>        
+        <script type="text/javascript">
+            window.onload = init;
+        </script>
+    </body>
+
+</html>

@@ -1,0 +1,1501 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "(SO0038) - Real-time Web Analytics with Kinesis Analytics: This solution provides
+    an auto scaled group of beacon servers and dashboard for real-time analytics of web site traffic."
+%%PARAMETERS%%
+Mappings:
+  SourceCode:
+    General:
+      S3Bucket: '%%BUCKET_NAME%%'
+      KeyPrefix: real-time-web-analytics-with-kinesis/latest
+  Sizing:
+    50K:
+      InstanceType: t2.medium
+      PacketsPerMinHigh: 200000
+      PacketsPerMinLow: 80000
+    100K:
+      InstanceType: m5.large
+      PacketsPerMinHigh: 500000
+      PacketsPerMinLow: 200000
+  DDB:
+    Scaling:
+      ReadTargetUtilization: 70
+      ReadCapacityMin: 1
+      ReadCapacityMax: 10
+      WriteTargetUtilization: 50
+      WriteCapacityMin: 5
+      WriteCapacityMax: 1000
+  Solution:
+    Data:
+      ID: SO0038
+      Version: 1.0.0
+      SendAnonymousUsageData: 'True'
+
+Conditions:
+  SSHAccess: !Equals [!Ref EnableSSH, Yes]
+  CreateCWDashboard: !Equals [!Ref CWDashboard, Yes]
+
+Resources:
+%%NETWORK_RESOURCES%%
+# Dashboard Resources
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      WebsiteConfiguration:
+        IndexDocument: index.html
+
+  AnalyticsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Principal: '*'
+            Action:
+              - s3:GetObject
+            Resource:
+              - !Sub '${WebsiteBucket.Arn}/*'
+            Effect: Allow
+
+# Cognito for Dashboard Users
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: real-time-web-analytics-user-pool
+      AliasAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: True
+        InviteMessageTemplate:
+          EmailMessage:
+            !Sub |
+              <p>You are invited to join the Real-Time Web Analytics dashboard. Your dashboard credentials are as follows:</p>
+              <p>
+              Username: <strong>{username}</strong><br />
+              Password: <strong>{####}</strong>
+              </p>
+              <p>
+              Please sign in to the dashboard with the user name and your temporary password provided above at: <br />
+              https://s3.${AWS::Region}.amazonaws.com/${WebsiteBucket}/index.html
+              </p>
+          EmailSubject: "Your Real-Time Web Analytics Dashboard Login"
+        UnusedAccountValidityDays: 7
+      EmailVerificationMessage:
+        !Sub |
+          <p>You are invited to join the Real-Time Web Analytics dashboard. Your dashboard credentials are as follows:</p>
+          <p>
+          Username: <strong>{username}</strong><br />
+          Password: <strong>{####}</strong>
+          </p>
+          <p>
+          Please sign in to the dashboard with the user name and temporary password provided above at: <br />
+          https://s3.${AWS::Region}.amazonaws.com/${WebsiteBucket}/index.html
+          </p>
+      EmailVerificationSubject: "Your Real-Time Web Analytics Dashboard Login"
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: True
+          RequireNumbers: True
+          RequireSymbols: False
+          RequireUppercase: True
+      Schema:
+        - AttributeDataType: String
+          Name: email
+          Required: True
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: real-time-account-activity-report
+      GenerateSecret: False
+      WriteAttributes:
+        - address
+        - email
+        - phone_number
+      ReadAttributes:
+        - name
+        - email
+        - email_verified
+        - address
+        - phone_number
+        - phone_number_verified
+      RefreshTokenValidity: 1
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoIdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: Realtime_Account_Activity_Pool
+      CognitoIdentityProviders:
+        - ClientId: !Ref CognitoUserPoolClient
+          ProviderName: !GetAtt CognitoUserPool.ProviderName
+      AllowUnauthenticatedIdentities: false
+
+  CognitoIdentityPoolRoleAttachment:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Sub '${CognitoIdentityPool}'
+      Roles:
+        unauthenticated: !GetAtt UnauthenticatedUserRole.Arn
+        authenticated: !GetAtt AuthenticatedUserRole.Arn
+
+  AuthenticatedUserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated:
+               - cognito-identity.amazonaws.com
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Sub '${CognitoIdentityPool}'
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: authenticated
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-sync:*
+                  - cognito-identity:*
+                Resource: !Sub 'arn:aws:cognito-identity:${AWS::Region}:${AWS::AccountId}:identitypool/${CognitoIdentityPool}'
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                Resource: !GetAtt MetricTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource: !GetAtt MetricDetailsTable.Arn
+
+  UnauthenticatedUserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated:
+                - cognito-identity.amazonaws.com
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "cognito-identity.amazonaws.com:aud": !Ref CognitoIdentityPool
+              ForAnyValue:StringLike:
+                "cognito-identity.amazonaws.com:amr": unauthenticated
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - mobileanalytics:PutEvents
+                  - cognito-sync:*
+                Resource: !Sub 'arn:aws:cognito-identity:${AWS::Region}:${AWS::AccountId}:identitypool/${CognitoIdentityPool}'
+
+  WebCognitoUser:
+    Type: AWS::Cognito::UserPoolUser
+    DependsOn:
+      - ConfigureWebsite
+      - WebsiteBucketPolicy
+      - AutoScalingGroup
+    Properties:
+      DesiredDeliveryMediums:
+        - EMAIL
+      ForceAliasCreation: True
+      UserAttributes:
+        - Name: email
+          Value: !Ref UserEmail
+        - Name: email_verified
+          Value: True
+      Username: !Ref UserName
+      UserPoolId: !Ref CognitoUserPool
+
+# AutoScaling and LoadBalancing
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: TargetGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref %%EC2_SUBNET0%%
+        - !Ref %%EC2_SUBNET1%%
+      LaunchConfigurationName: !Ref AutoScalingGroupLaunchConfig
+      MinSize: !Ref AutoScalingMinSize
+      MaxSize: !Ref AutoScalingMaxSize
+      HealthCheckGracePeriod: 300
+      HealthCheckType: ELB
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      Tags:
+        - Key: "Name"
+          Value: !Sub '${AWS::StackName}-beacon-web-server'
+          PropagateAtLaunch: "true"
+
+  PacketsAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: 3
+      Statistic: Average
+      Threshold: !FindInMap [Sizing, !Ref NodeSize, PacketsPerMinHigh]
+      AlarmDescription: Alarm if Network Packets In too high or metric disappears indicating instance is under high load
+      Period: 60
+      AlarmActions:
+        - !Ref ScaleUpPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: NetworkPacketsIn
+
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      Cooldown: 300
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      ScalingAdjustment: 1
+
+  PacketsAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      EvaluationPeriods: 3
+      Statistic: Average
+      Threshold: !FindInMap [Sizing, !Ref NodeSize, PacketsPerMinLow]
+      AlarmDescription: Alarm if Network Packets In are too low and indicating that we can shed instances
+      Period: 60
+      AlarmActions:
+        - !Ref ScaleDownPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      ComparisonOperator: LessThanThreshold
+      MetricName: NetworkPacketsIn
+
+  ScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      Cooldown: 180
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      ScalingAdjustment: -1
+
+  AutoScalingGroupLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum:
+              httpd: []
+              aws-kinesis-agent: []
+          files:
+            /etc/aws-kinesis/agent.json:
+              content: !Sub |
+                { "cloudwatch.emitMetrics": false,
+                 "maxBufferAgeMillis":"1000",
+                 "firehose.endpoint": "https://firehose.${AWS::Region}.amazonaws.com",
+                 "flows": [
+                   {
+                     "filePattern": "/var/log/httpd/access_log*",
+                     "deliveryStream": "${DeliveryStream}",
+                     "partitionKeyOption": "RANDOM",
+                     "dataProcessingOptions": [
+                     {
+                          "optionName": "LOGTOJSON",
+                          "logFormat":"COMBINEDAPACHELOG",
+                          "matchPattern": "^([\\d.]+) (\\S+) (\\S+) \\[([\\w:/]+\\s[+\\-]\\d{4})\\] \"(.+?)\" (\\d{3}) ([0-9]+) \"(.+?)\" \"(.+?)\" \"(.+?)\" \"(.+?)\" \"(.+?)\"$",
+                          "customFieldNames": ["host", "ident", "authuser", "datetime", "request", "response", "bytes", "referrer", "agent", "event", "clientid", "page"]
+                     }
+                     ]
+                   }
+                 ]
+                }
+            /var/www/html/index.html:
+              content: |-
+                <HTML><HEAD></HEAD>
+                <BODY>AWS Web Analytics Solution Accelerator</BODY>
+                </HTML>
+            /var/log/httpd/remove_old_log.sh:
+              content: |-
+                #!/bin/bash
+                sleep 60
+                echo "Rotating log on `date`" >> /var/log/httpd/rotate.log
+                echo "New Log File: $1, Old Log File: $2" >> /var/log/httpd/rotate.log
+                echo "rm $2" >> /var/log/httpd/rotate.log
+                rm $2
+              mode: "000775"
+              owner: "root"
+              group: "root"
+          commands:
+            aa-add-yum-update:
+              command: yum update -y
+            ab1-add-httpd:
+              command: yum install httpd -y
+            ab2-add-httpd:
+              command: yum install aws-kinesis-agent -y
+            ac1-add-service-httpd:
+              command: chkconfig --add httpd
+            ac2-make-readable-logs:
+              command: chmod -R go+rX /var/log/httpd
+            ad-add-service-aws-kinesis-agent:
+              command: chkconfig --add aws-kinesis-agent
+            ae-add-service-startup-aws-kinesis-agent:
+              command: chkconfig aws-kinesis-agent on
+            af-add-service-startup-httpd:
+              command: chkconfig httpd on
+            ba-return200s:
+              command: echo "<Directory \"/\">" >> /etc/httpd/conf/httpd.conf
+            bb-return200s:
+              command: !Join ["", ["echo '   Header set Access-Control-Allow-Origin \"", Ref: "CorsOrig", "\"' >> /etc/httpd/conf/httpd.conf"]]
+            bc-return200s:
+              command: echo "   RewriteEngine on" >> /etc/httpd/conf/httpd.conf
+            bd-return200s:
+              command: echo "   RewriteRule '^.*' '/var/www/html/index.html'" >> /etc/httpd/conf/httpd.conf
+            be-return200s:
+              command: echo "</Directory>" >> /etc/httpd/conf/httpd.conf
+            be-rotate-logs:
+              command: sed -i 's/CustomLog logs\/access_log combined/CustomLog \"|\/usr\/sbin\/rotatelogs -p \/var\/log\/httpd\/remove_old_log.sh \/var\/log\/httpd\/access_log 1G\" combined/' /etc/httpd/conf/httpd.conf
+            ca-add-data-header:
+              command: sed -i 's/LogFormat "%h %l %u %t \\"%r\\" %>s %b \\"%{Referer}i\\"
+                \\"%{User-Agent}i\\"" combined/LogFormat "%h %l %u %t \\"%r\\" %>s
+                %b \\"%{Referer}i\\" \\"%{User-Agent}i\\" \\"%{event}i\\" \\"%{clientid}i\\"
+                \\"%{page}i\\"" combined/' /etc/httpd/conf/httpd.conf
+          services:
+            sysvinit:
+              httpd:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/init.d/httpd
+              aws-kinesis-agent:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/init.d/aws-kinesis-agent
+    Properties:
+      ImageId: !GetAtt GetAMI.amiId
+      InstanceType: !FindInMap [Sizing, !Ref NodeSize, InstanceType]
+      KeyName: !If [SSHAccess, !Ref "Key", !Ref "AWS::NoValue"]
+      IamInstanceProfile: !Ref WebServerInstanceProfile
+      SecurityGroups:
+        - !Ref WebServerNonSSLSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash -xe
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource AutoScalingGroupLaunchConfig --region ${AWS::Region}
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+
+  PatchingAssociation:
+    Type: AWS::SSM::Association
+    Properties:
+      AssociationName: WASAPatching
+      Name: AWS-RunPatchBaseline
+      Parameters:
+        Operation:
+          - Install
+      ScheduleExpression: rate(1 day)
+      Targets:
+        - Key: tag:aws:cloudformation:stack-name
+          Values:
+            - !Ref AWS::StackName
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+        - !Ref %%ALB_SUBNET0%%
+        - !Ref %%ALB_SUBNET1%%
+      SecurityGroups:
+        - !GetAtt ALBSecurityGroup.GroupId
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      HealthCheckTimeoutSeconds: 5
+      Matcher:
+        HttpCode: 200-499
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      TargetType: instance
+      VpcId: !Ref VPC
+      Tags:
+        - Key: 'Name'
+          Value: !Sub '${AWS::StackName}-target-group'
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Web traffic for ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref BeaconSourceCIDR
+
+  WebServerNonSSLSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Web port only (80)
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  SSHAccessSecurityGroupRule:
+    Condition: SSHAccess
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref WebServerNonSSLSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref SSHLocation
+
+  WebServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /WebServerInstanceProfile/
+      Roles:
+        - !Ref WebServerKinesisRole
+
+  WebServerKinesisRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: puttofirehose
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource:
+                  - !GetAtt 'DeliveryStream.Arn'
+        - PolicyName: ssmagent
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:DescribeAssociation
+                  - ssm:GetDeployablePatchSnapshotForInstance
+                  - ssm:GetDocument
+                  - ssm:GetManifest
+                  - ssm:GetParameters
+                  - ssm:ListAssociations
+                  - ssm:ListInstanceAssociations
+                  - ssm:PutInventory
+                  - ssm:PutComplianceItems
+                  - ssm:PutConfigurePackageResult
+                  - ssm:UpdateAssociationStatus
+                  - ssm:UpdateInstanceAssociationStatus
+                  - ssm:UpdateInstanceInformation
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2messages:AcknowledgeMessage
+                  - ec2messages:DeleteMessage
+                  - ec2messages:FailMessage
+                  - ec2messages:GetEndpoint
+                  - ec2messages:GetMessages
+                  - ec2messages:SendReply
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstanceStatus
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    ec2:ResourceTag/tag:aws:cloudformation:stack-name:
+                      Ref: AWS::StackName
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: '*'
+
+# Metric Storage
+  MetricTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: MetricType
+          AttributeType: S
+      KeySchema:
+        - AttributeName: MetricType
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      TableName: !Sub '${AWS::StackName}-Metrics'
+
+  MetricDetailsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: MetricType
+          AttributeType: S
+        - AttributeName: EventTimestamp
+          AttributeType: N
+      KeySchema:
+        - AttributeName: MetricType
+          KeyType: HASH
+        - AttributeName: EventTimestamp
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: !FindInMap [DDB, Scaling, ReadCapacityMin]
+        WriteCapacityUnits: !FindInMap [DDB, Scaling, ReadCapacityMin]
+      TableName: !Sub '${AWS::StackName}-MetricDetails'
+      TimeToLiveSpecification:
+        AttributeName: ExpireTime
+        Enabled: true
+
+  DDBScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - application-autoscaling.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+
+              # Allows
+              - Effect: "Allow"
+                Action:
+                  - "cloudwatch:PutMetricAlarm"
+                  - "cloudwatch:DescribeAlarms"
+                  - "cloudwatch:GetMetricStatistics"
+                  - "cloudwatch:SetAlarmState"
+                  - "cloudwatch:DeleteAlarms"
+                Resource: "*"
+              - Effect: "Allow"
+                Action:
+                  - "dynamodb:DescribeTable"
+                  - "dynamodb:UpdateTable"
+                Resource:
+                  - !GetAtt MetricDetailsTable.Arn
+
+  WriteCapacityScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: !FindInMap [DDB, Scaling, WriteCapacityMax]
+      MinCapacity: !FindInMap [DDB, Scaling, WriteCapacityMin]
+      ResourceId: !Sub "table/${MetricDetailsTable}"
+      RoleARN: !GetAtt DDBScalingRole.Arn
+      ScalableDimension: dynamodb:table:WriteCapacityUnits
+      ServiceNamespace: dynamodb
+
+  WriteScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: WriteAutoScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref WriteCapacityScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: !FindInMap [DDB, Scaling, WriteTargetUtilization]
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: DynamoDBWriteCapacityUtilization
+
+  ReadCapacityScalableTarget:
+    Type: "AWS::ApplicationAutoScaling::ScalableTarget"
+    Properties:
+      MaxCapacity: !FindInMap [DDB, Scaling, ReadCapacityMax]
+      MinCapacity: !FindInMap [DDB, Scaling, ReadCapacityMin]
+      ResourceId: !Sub "table/${MetricDetailsTable}"
+      RoleARN: !GetAtt DDBScalingRole.Arn
+      ScalableDimension: dynamodb:table:ReadCapacityUnits
+      ServiceNamespace: dynamodb
+
+  ReadScalingPolicy:
+    Type: "AWS::ApplicationAutoScaling::ScalingPolicy"
+    Properties:
+      PolicyName: ReadAutoScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ReadCapacityScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: !FindInMap [DDB, Scaling, ReadTargetUtilization]
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: DynamoDBReadCapacityUtilization
+
+# Kinesis Application
+  DeliveryStreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - firehose.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: s3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ''
+                Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !Sub '${AnalyticsBucket.Arn}'
+                  - !Sub '${AnalyticsBucket.Arn}/*'
+              - Sid: ''
+                Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/*:log-stream:*'
+
+  DeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamType: DirectPut
+      S3DestinationConfiguration:
+        BucketARN: !Sub '${AnalyticsBucket.Arn}'
+        BufferingHints:
+          IntervalInSeconds: '60'
+          SizeInMBs: '1'
+        CompressionFormat: UNCOMPRESSED
+        RoleARN: !GetAtt 'DeliveryStreamRole.Arn'
+
+  OutputStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Sub '${AWS::StackName}-OutputStream'
+      RetentionPeriodHours: 24
+      ShardCount: 1
+
+  KinesisAnalyticsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - kinesisanalytics.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: kinesisaccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadInputStream
+                Effect: Allow
+                Action:
+                  - firehose:DescribeDeliveryStream
+                  - firehose:Get*
+                Resource:
+                  - !GetAtt 'DeliveryStream.Arn'
+              - Sid: LisInputStream
+                Effect: Allow
+                Action:
+                  - firehose:ListDeliveryStreams
+                Resource: '*'
+              - Sid: WriteOutputStram
+                Effect: Allow
+                Action:
+                  - kinesis:PutRecord
+                  - kinesis:PutRecords
+                  - kinesis:DescribeStream
+                Resource:
+                  - !GetAtt 'OutputStream.Arn'
+
+  KinesisAnalyticsApp:
+    Type: AWS::KinesisAnalytics::Application
+    Properties:
+      ApplicationName: !Sub '${AWS::StackName}-WebMetricsApplication'
+      ApplicationDescription: Kineis Analytics Web Metrics Solution Accelerator
+      ApplicationCode: !Sub |
+            CREATE STREAM "DESTINATION_SQL_STREAM"(
+                MetricType VARCHAR(16),
+                EventTimestamp BIGINT,
+                MetricItem VARCHAR(1024),
+                UnitValueInt BIGINT,
+                UnitValueFloat DOUBLE);
+
+            --Active Visitors
+            CREATE OR REPLACE PUMP "VISTOR_COUNTER_PUMP" AS
+            INSERT INTO "DESTINATION_SQL_STREAM" ( MetricType, EventTimestamp, UnitValueInt)
+            SELECT STREAM 'visitor_count', UNIX_TIMESTAMP(weblogs.window_time), COUNT(weblogs.clientid) FROM (
+                SELECT STREAM DISTINCT
+                    monotonic (STEP (CHAR_TO_TIMESTAMP('dd/MMM/yyyy:HH:mm:ss z',"WASA_001"."datetime") by INTERVAL '60' SECOND)) AS window_time,
+                    STEP ("WASA_001".ROWTIME BY INTERVAL '60' SECOND),
+                    "WASA_001"."clientid" as clientid
+                FROM "WASA_001") as weblogs
+                GROUP BY
+                window_time;
+
+            --"Top" Page Views (group_rank?)
+            CREATE OR REPLACE PUMP "PAGEVIEWS_PUMP" AS
+            INSERT INTO "DESTINATION_SQL_STREAM" ( MetricType, EventTimestamp, MetricItem, UnitValueInt)
+            SELECT 'top_pages', UNIX_TIMESTAMP(eventTimestamp), page, page_count FROM (
+                SELECT stream
+                    weblogs."page" as page,
+                    count(*) as page_count,
+                    STEP (CHAR_TO_TIMESTAMP('dd/MMM/yyyy:HH:mm:ss z',weblogs."datetime") by INTERVAL '10' SECOND) as eventTimestamp
+                FROM "WASA_001" weblogs
+                WHERE weblogs."page" is not NULL
+                GROUP BY
+                    STEP (weblogs.ROWTIME BY INTERVAL '10' SECOND),
+                    STEP (CHAR_TO_TIMESTAMP('dd/MMM/yyyy:HH:mm:ss z',weblogs."datetime") by INTERVAL '10' SECOND),
+                    weblogs."page"
+                HAVING count(*) > 1
+                ORDER BY STEP (weblogs.ROWTIME BY INTERVAL '10' SECOND), page_count desc
+            );
+
+            -- Events --
+            CREATE STREAM "EVENT_STREAM"(
+                MetricType VARCHAR(16),
+                EventTimestamp BIGINT,
+                MetricItem VARCHAR(1024),
+                UnitValueInt BIGINT);
+            CREATE OR REPLACE PUMP "SHARED_EVENT_PUMP" AS
+            INSERT INTO "EVENT_STREAM" ( MetricType, EventTimestamp, MetricItem, UnitValueInt)
+            SELECT 'event_count', UNIX_TIMESTAMP(eventTimestamp), event, event_count FROM (
+                SELECT STREAM
+                    STEP (CHAR_TO_TIMESTAMP('dd/MMM/yyyy:HH:mm:ss z',weblogs."datetime") by INTERVAL '10' SECOND) as eventTimestamp,
+                    weblogs."event" event,
+                    count(*) event_count
+                FROM "WASA_001" weblogs
+                WHERE weblogs."event" is not NULL
+                GROUP BY
+                    weblogs."event",
+                    STEP (weblogs.ROWTIME BY INTERVAL '10' SECOND),
+                    STEP (CHAR_TO_TIMESTAMP('dd/MMM/yyyy:HH:mm:ss z',weblogs."datetime") by INTERVAL '10' SECOND)
+            );
+
+            CREATE OR REPLACE PUMP "EVENT_PUMP" AS
+            INSERT INTO "DESTINATION_SQL_STREAM" (MetricType, EventTimestamp, MetricItem, UnitValueInt)
+            SELECT STREAM MetricType, EventTimestamp, MetricItem, UnitValueInt FROM "EVENT_STREAM";
+
+            --Anomaly detection for event distribution
+            CREATE STREAM "ANOMALY_TEMP_STREAM"(
+                EventTimestampString VARCHAR(16),
+                MetricItem VARCHAR(1024),
+                MetricItemInt INTEGER,
+                UnitValueInt BIGINT,
+                AnomalyScore DOUBLE);
+            CREATE OR REPLACE PUMP "INTERMEDIATE_ANOMALY_EVENT_PUMP" AS
+            INSERT INTO "ANOMALY_TEMP_STREAM" ( EventTimestampString, MetricItem, MetricItemInt, UnitValueInt, AnomalyScore)
+            SELECT STREAM *
+            FROM TABLE (
+                RANDOM_CUT_FOREST(
+                    CURSOR(SELECT STREAM
+                        CAST(EventTimestamp AS VARCHAR(16)),
+                        MetricItem,
+                        case MetricItem
+                        WHEN 'click' THEN 1
+                        WHEN 'pageview' THEN 2
+                        WHEN 'conversion' THEN 3
+                        WHEN 'exception' THEN 4
+                        WHEN 'playvideo' THEN 5
+                        WHEN 'login' THEN 6
+                        WHEN 'logoff' THEN 7
+                        ELSE 0
+                        END,
+                        UnitValueInt FROM "EVENT_STREAM"),
+                        100,
+                        256,
+                        100000,
+                        1)
+                );
+
+            CREATE OR REPLACE PUMP "ANOMALY_EVENT_PUMP" AS
+            INSERT INTO "DESTINATION_SQL_STREAM" (MetricType, EventTimestamp, MetricItem, UnitValueFloat)
+            SELECT 'event_anomaly', CAST(EventTimestampString AS BIGINT), MetricItem || ':' || CAST(UnitValueInt as VARCHAR(16)), AnomalyScore FROM (
+                SELECT STREAM
+                    EventTimestampString,
+                    MetricItem,
+                    UnitValueInt,
+                    AnomalyScore
+                FROM "ANOMALY_TEMP_STREAM"
+                WHERE AnomalyScore > 2.0
+            );
+
+            --agents
+            CREATE OR REPLACE PUMP "AGENT_PUMP" AS
+            INSERT INTO "DESTINATION_SQL_STREAM" ( MetricType, EventTimestamp, MetricItem, UnitValueInt)
+            SELECT 'agent_count', UNIX_TIMESTAMP(eventTimestamp), agent, agent_count FROM (
+                SELECT STREAM
+                    weblogs."agent" as agent,
+                    count(*) as agent_count,
+                    STEP (weblogs.ROWTIME BY INTERVAL '10' SECOND) as eventTimestamp
+                FROM "WASA_001" weblogs
+                WHERE weblogs."agent" NOT like 'ELB-HealthChecker%'
+                GROUP BY
+                    weblogs."agent",
+                    STEP (weblogs.ROWTIME BY INTERVAL '10' SECOND)
+            );
+
+            --referrer (-r) list
+            CREATE OR REPLACE PUMP "REFERRER_PUMP" AS
+            INSERT INTO "DESTINATION_SQL_STREAM" ( MetricType, EventTimestamp, MetricItem, UnitValueInt)
+            SELECT 'referral_count', UNIX_TIMESTAMP(eventTimestamp), referrer, referrer_count FROM (
+                SELECT stream
+                    weblogs."referrer" as referrer,
+                    count(*) as referrer_count,
+                    STEP (CHAR_TO_TIMESTAMP('dd/MMM/yyyy:HH:mm:ss z',weblogs."datetime") by INTERVAL '10' SECOND) as eventTimestamp
+                FROM "WASA_001" weblogs
+                GROUP BY
+                    STEP (weblogs.ROWTIME BY INTERVAL '10' SECOND),
+                    STEP (CHAR_TO_TIMESTAMP('dd/MMM/yyyy:HH:mm:ss z',weblogs."datetime") by INTERVAL '10' SECOND),
+                    weblogs."referrer"
+                ORDER BY STEP (weblogs.ROWTIME BY INTERVAL '10' SECOND), referrer_count desc
+            );
+
+            --Hourly Events
+            CREATE OR REPLACE PUMP "HOURLY_EVENT_PUMP" AS
+            INSERT INTO "DESTINATION_SQL_STREAM" ( MetricType, EventTimestamp, MetricItem, UnitValueInt)
+            SELECT 'hourly_events', EventTimestamp, MetricItem, hourly_total FROM (
+                SELECT STREAM
+                    SUM(UnitValueInt) OVER hourly_window as hourly_total,
+                    MetricItem,
+                    EventTimestamp
+                FROM "EVENT_STREAM"
+                WINDOW hourly_window AS (
+                    PARTITION BY MetricItem
+                        RANGE INTERVAL '1' HOUR PRECEDING
+                )
+            );
+
+      Inputs:
+        - NamePrefix: WASA
+          InputSchema:
+            RecordColumns:
+              - Name: host
+                SqlType: VARCHAR(16)
+                Mapping: $.host
+              - Name: datetime
+                SqlType: VARCHAR(32)
+                Mapping: $.datetime
+              - Name: request
+                SqlType: VARCHAR(256)
+                Mapping: $.request
+              - Name: response
+                SqlType: INTEGER
+                Mapping: $.response
+              - Name: bytes
+                SqlType: INTEGER
+                Mapping: $.bytes
+              - Name: referrer
+                SqlType: VARCHAR(32)
+                Mapping: $.referrer
+              - Name: agent
+                SqlType: VARCHAR(128)
+                Mapping: $.agent
+              - Name: event
+                SqlType: VARCHAR(16)
+                Mapping: $.event
+              - Name: clientid
+                SqlType: VARCHAR(256)
+                Mapping: $.clientid
+              - Name: page
+                SqlType: VARCHAR(256)
+                Mapping: $.page
+              - Name: custom_metric_name
+                SqlType: VARCHAR(256)
+                Mapping: $.custom_metric_name
+              - Name: custom_metric_int_value
+                SqlType: INTEGER
+                Mapping: $.custom_metric_int_value
+              - Name: custom_metric_float_value
+                SqlType: DOUBLE
+                Mapping: $.custom_metric_float_value
+              - Name: custom_metric_string_value
+                SqlType: VARCHAR(256)
+                Mapping: $.custom_metric_string_value
+            RecordFormat:
+              RecordFormatType: JSON
+              MappingParameters:
+                JSONMappingParameters:
+                  RecordRowPath: $
+          KinesisFirehoseInput:
+            ResourceARN: !Sub 'arn:aws:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/${DeliveryStream}'
+            RoleARN: !GetAtt 'KinesisAnalyticsRole.Arn'
+
+  KinesisAnalyticsAppAnomalyOutput:
+    Type: AWS::KinesisAnalytics::ApplicationOutput
+    Properties:
+      ApplicationName: !Ref KinesisAnalyticsApp
+      Output:
+        DestinationSchema:
+          RecordFormatType: JSON
+        KinesisStreamsOutput:
+          ResourceARN: !GetAtt OutputStream.Arn
+          RoleARN: !GetAtt KinesisAnalyticsRole.Arn
+        Name: DESTINATION_SQL_STREAM
+
+  KinesisAnalyticsStarter:
+    Type: Custom::LoadLambda
+    DependsOn:
+      - KinesisAnalyticsAppAnomalyOutput
+    Properties:
+      ServiceToken: !GetAtt CustomResourceHelper.Arn
+      Region: !Ref AWS::Region
+      ApplicationName: !Ref KinesisAnalyticsApp
+      CustomResourceAction: StartKinesisApplication
+      UUID: !GetAtt GenerateUUID.UUID
+
+# Metrics Processor
+  ProcessMetricsTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 100
+      Enabled: true
+      EventSourceArn: !GetAtt OutputStream.Arn
+      FunctionName: !GetAtt ProcessMetricsFunction.Arn
+      StartingPosition: LATEST
+
+  ProcessMetricsLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: ProcessMetricsLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DynamoDBAccess
+                Effect: Allow
+                Action:
+                  - dynamodb:BatchGetItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:GetItem
+                  - dynamodb:GetRecords
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !GetAtt MetricTable.Arn
+                  - !GetAtt MetricDetailsTable.Arn
+              - Sid: CWLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutDestination
+                  - logs:PutLogEvents
+                Resource:
+                  - !Join ["", ["arn:aws:logs:", Ref: "AWS::Region", ":", Ref: "AWS::AccountId", ":log-group:/aws/lambda/*"]]
+              - Sid: AccessOutputStream
+                Effect: Allow
+                Action:
+                  - kinesis:GetRecords
+                  - kinesis:GetShardIterator
+                  - kinesis:DescribeStream
+                  - kinesis:ListStreams
+                Resource:
+                  - !GetAtt OutputStream.Arn
+
+  ProcessMetricsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Sub
+          - ${Param1}-${AWS::Region}
+          - Param1: !FindInMap
+              - SourceCode
+              - General
+              - S3Bucket
+        S3Key: !Sub
+          - ${Param1}/wasa.zip
+          - Param1: !FindInMap
+              - SourceCode
+              - General
+              - KeyPrefix
+      Environment:
+        Variables:
+          METRIC_TABLE: !Ref MetricTable
+          METRIC_DETAILS_TABLE: !Ref MetricDetailsTable
+          SOLUTION_UUID: !GetAtt GenerateUUID.UUID
+          SOLUTION_ID: !FindInMap
+            - Solution
+            - Data
+            - ID
+          SOLUTION_VERSION: !FindInMap
+            - Solution
+            - Data
+            - Version
+          SEND_ANONYMOUS_DATA: !FindInMap
+            - Solution
+            - Data
+            - SendAnonymousUsageData
+      Description: Solution Accelerator for Web Analytics - Function to process metrics.
+      Handler: index.handler
+      MemorySize: 256
+      Role: !GetAtt ProcessMetricsLambdaRole.Arn
+      Runtime: nodejs6.10
+      Timeout: 300
+
+# Custom Resource
+  CustomResourceHelper:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Sub
+          - ${Param1}-${AWS::Region}
+          - Param1: !FindInMap
+              - SourceCode
+              - General
+              - S3Bucket
+        S3Key: !Sub
+          - ${Param1}/custom-resource-helper.zip
+          - Param1: !FindInMap
+              - SourceCode
+              - General
+              - KeyPrefix
+      Environment:
+        Variables:
+          SOLUTION_ID: !FindInMap
+            - Solution
+            - Data
+            - ID
+          SOLUTION_VERSION: !FindInMap
+            - Solution
+            - Data
+            - Version
+          SEND_ANONYMOUS_DATA: !FindInMap
+            - Solution
+            - Data
+            - SendAnonymousUsageData
+      Description: Solution Accelerator for Web Analytics - Function to deploy web
+        pages.
+      Handler: index.handler
+      MemorySize: 256
+      Role: !GetAtt 'CustomResourceHelperRole.Arn'
+      Runtime: nodejs6.10
+      Timeout: 300
+
+  CustomResourceHelperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: CustomResourceHelperPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:DeleteObject
+                  - s3:ListObjects
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${WebsiteBucket.Arn}/*'
+                  - !Sub '${WebsiteBucket.Arn}/'
+                  - !GetAtt 'WebsiteBucket.Arn'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub
+                    - arn:aws:s3:::${Param1}-${AWS::Region}/${Param2}/*
+                    - Param1: !FindInMap
+                        - SourceCode
+                        - General
+                        - S3Bucket
+                      Param2: !FindInMap
+                        - SourceCode
+                        - General
+                        - KeyPrefix
+              - Sid: CWLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutDestination
+                  - logs:PutLogEvents
+                Resource:
+                  - !Join ["", ["arn:aws:logs:", Ref: "AWS::Region", ":", Ref: "AWS::AccountId", ":log-group:/aws/lambda/*"]]
+              - Effect: Allow
+                Action:
+                  - kinesisanalytics:StartApplication
+                  - kinesisanalytics:DescribeApplication
+                Resource:
+                  - !Sub 'arn:aws:kinesisanalytics:${AWS::Region}:${AWS::AccountId}:application/${KinesisAnalyticsApp}'
+              - Effect: Allow
+                Action:
+                  - kinesisanalytics:ListApplications
+                Resource:
+                  - '*'
+              - Effect: Allow
+                Action:
+                  - ec2:describeImages
+                Resource:
+                  - '*'
+              - Sid: DynamoDBAccess
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt MetricTable.Arn
+
+# Misc Custom Resource Callers
+  GenerateUUID:
+    Type: Custom::LoadLambda
+    Properties:
+      ServiceToken: !GetAtt 'CustomResourceHelper.Arn'
+      CustomResourceAction: GenerateUUID
+
+  GetAMI:
+    Type: Custom::LoadLambda
+    Properties:
+      ServiceToken: !GetAtt CustomResourceHelper.Arn
+      Region: !Ref AWS::Region
+      UUID: !GetAtt GenerateUUID.UUID
+      AMIName: amzn-ami-hvm-*-x86_64-gp2
+      CustomResourceAction: GetAMI
+
+  SeedDynamoTable:
+    Type: Custom::LoadLambda
+    Properties:
+      ServiceToken: !GetAtt CustomResourceHelper.Arn
+      Region: !Ref AWS::Region
+      TableName: !Ref MetricTable
+      CustomResourceAction: SeedDynamoTable
+      UUID: !GetAtt GenerateUUID.UUID
+
+  ConfigureWebsite:
+    Type: Custom::LoadLambda
+    Properties:
+      ServiceToken: !GetAtt CustomResourceHelper.Arn
+      Region: !Ref AWS::Region
+      CustomResourceAction: ConfigureWebsite
+      SourceS3Bucket: !Sub
+        - ${Param1}-${AWS::Region}
+        - Param1: !FindInMap
+            - SourceCode
+            - General
+            - S3Bucket
+      SourceS3Key: !Sub
+        - ${Param1}/web_site
+        - Param1: !FindInMap
+            - SourceCode
+            - General
+            - KeyPrefix
+      WebsiteBucket: !Ref WebsiteBucket
+      IdentityPoolId: !Ref CognitoIdentityPool
+      UserPoolId: !Ref CognitoUserPool
+      UserPoolClientId: !Ref CognitoUserPoolClient
+      MetricsTableName: !Ref MetricTable
+      MetricDetailsTableName: !Ref MetricDetailsTable
+      UUID: !GetAtt GenerateUUID.UUID
+
+  SendStackCreationMetric:
+    Type: Custom::LoadLambda
+    Properties:
+      ServiceToken: !GetAtt CustomResourceHelper.Arn
+      CustomResourceAction: SendMetric
+      UUID: !GetAtt GenerateUUID.UUID
+      EnableSSH: !Ref EnableSSH
+      NodeSize: !Ref NodeSize
+      CWDashboard: !Ref CWDashboard
+      AutoScalingMinSize: !Ref AutoScalingMinSize
+      AutoScalingMaxSize: !Ref AutoScalingMaxSize
+
+  CloudWatchDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${AWS::StackName}-Beacon-Servers-Metrics-${AWS::Region}'
+      DashboardBody:
+        !Sub
+          - |
+            {
+               "widgets":[
+                  {
+                     "type":"metric",
+                     "x":0,
+                     "y":0,
+                     "width":12,
+                     "height":3,
+                     "properties":{
+                        "metrics":[
+                           [
+                              "AWS/ApplicationELB",
+                              "HealthyHostCount",
+                              "TargetGroup",
+                              "${TargetGroup.TargetGroupFullName}",
+                              "LoadBalancer",
+                              "${ApplicationLoadBalancer.LoadBalancerFullName}"
+                           ]
+                        ],
+                        "period":60,
+                        "stat":"Maximum",
+                        "region":"${AWS::Region}",
+                        "title":"Number of Beacon Servers"
+                     }
+                  },
+                  {
+                     "type":"metric",
+                     "x":0,
+                     "y":4,
+                     "width":12,
+                     "height":3,
+                     "properties":{
+                        "metrics":[
+                           [
+                              "AWS/EC2",
+                              "NetworkPacketsIn",
+                              "AutoScalingGroupName",
+                              "${AutoScalingGroup}"
+                           ]
+                        ],
+                        "annotations": {
+                           "horizontal": [
+                             {
+                                "visible":true,
+                                "color":"#d62728",
+                                "label":"Scale Up",
+                                "value":${FindInMapScaleUp}
+                             },
+                             {
+                                "visible":true,
+                                "color":"#2ca02c",
+                                "label":"Scale Down",
+                                "value":${FindInMapScaleDown}
+                             }
+
+                          ]
+                        },
+                        "period":300,
+                        "stat":"Average",
+                        "region":"${AWS::Region}",
+                        "title":"Average Network Packets In"
+                     }
+                  },
+                  {
+                     "type":"metric",
+                     "x":0,
+                     "y":8,
+                     "width":12,
+                     "height":6,
+                     "properties":{
+                        "metrics":[
+                           [
+                              "AWS/ApplicationELB",
+                              "RequestCount",
+                              "LoadBalancer",
+                              "${ApplicationLoadBalancer.LoadBalancerFullName}",
+                              {
+                                "label":"Requests/Min"
+                              }
+                           ]
+                        ],
+                        "period":60,
+                        "stat":"Sum",
+                        "region":"${AWS::Region}",
+                        "title":"Aggregate Request Count"
+                     }
+                  },
+                  {
+                     "type":"metric",
+                     "x":13,
+                     "y":0,
+                     "width":12,
+                     "height":3,
+                     "properties":{
+                        "metrics":[
+                           [
+                              "AWS/ApplicationELB",
+                              "HTTPCode_ELB_5XX_Count",
+                              "LoadBalancer",
+                              "${ApplicationLoadBalancer.LoadBalancerFullName}"
+                           ]
+                        ],
+                        "period":60,
+                        "stat":"Sum",
+                        "region":"${AWS::Region}",
+                        "title":"Aggregate 5XX Error Count"
+                     }
+                  },
+                  {
+                     "type":"metric",
+                     "x":13,
+                     "y":4,
+                     "width":12,
+                     "height":3,
+                     "properties":{
+                        "metrics":[
+                           [
+                              "AWS/DynamoDB",
+                              "WriteThrottleEvents",
+                              "TableName",
+                              "${MetricDetailsTable}"
+                           ]
+                        ],
+                        "period":60,
+                        "stat":"Sum",
+                        "region":"${AWS::Region}",
+                        "title":"Metric Details Table Write Throttle Events"
+                     }
+                  },
+                  {
+                     "type":"metric",
+                     "x":13,
+                     "y":8,
+                     "width":12,
+                     "height":6,
+                     "properties":{
+                        "metrics":[
+                           [
+                              "AWS/DynamoDB",
+                              "ConsumedWriteCapacityUnits",
+                              "TableName",
+                              "${MetricDetailsTable}",
+                              {
+                                "yAxis":"left",
+                                "label":"Consumed/Min",
+                                "period":60,
+                                "stat":"Sum"
+                              }
+                           ],
+                           [
+                              "AWS/DynamoDB",
+                              "ProvisionedWriteCapacityUnits",
+                              "TableName",
+                              "${MetricDetailsTable}",
+                              {
+                                "yAxis":"right",
+                                "label":"Provisioned",
+                                "period":900,
+                                "stat":"Maximum"
+                              }
+                           ]
+                        ],
+                        "period":60,
+                        "stat":"Average",
+                        "region":"${AWS::Region}",
+                        "title":"Metric Details Table Consumed/Provisioned Capacity"
+                     }
+                  }
+               ]
+            }
+          - {
+            FindInMapScaleUp: !FindInMap [Sizing, !Ref NodeSize, PacketsPerMinHigh],
+            FindInMapScaleDown: !FindInMap [Sizing, !Ref NodeSize, PacketsPerMinLow]
+            }
+Outputs:
+  DashboardUrl:
+    Description: The URL to the Dashboard.
+    Value: !Sub 'https://s3.${AWS::Region}.amazonaws.com/${WebsiteBucket}/index.html'
+  DashboardUserName:
+    Value: !Ref UserName
+  DataGenerator:
+    Description: Generate test data command.
+    Value: !Sub 'python ./test-beacon.py http://${ApplicationLoadBalancer.DNSName}/beacon 20000 0.5'
+  BeaconDNS:
+    Description: DNS name for beacon web server ALB.
+    Value: !Sub ${ApplicationLoadBalancer.DNSName}
+  BeaconServerUrl:
+    Description: URL for beacon web servers.
+    Value: !Sub http://${ApplicationLoadBalancer.DNSName}/beacon
+  TestScriptUrl:
+    Description: Link to download test-beacon.py for testing your beacon servers.
+    Value: !Sub 'https://s3.${AWS::Region}.amazonaws.com/${WebsiteBucket}/test-beacon.py'
