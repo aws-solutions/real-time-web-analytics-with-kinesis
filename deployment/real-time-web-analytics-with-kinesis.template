@@ -1250,7 +1250,7 @@ Resources:
       ServiceToken: !GetAtt CustomResourceHelper.Arn
       Region: !Ref AWS::Region
       UUID: !GetAtt GenerateUUID.UUID
-      AMIName: amzn-ami-hvm-*-x86_64-gp2
+      AMIName: amzn-ami-hvm-20*-x86_64-gp2
       CustomResourceAction: GetAMI
 
   SeedDynamoTable:
