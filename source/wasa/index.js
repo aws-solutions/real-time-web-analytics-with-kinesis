@@ -37,6 +37,7 @@ exports.handler = (event, context, callback) => {
             }
             if (metricRecordsBatch[i].METRICTYPE === 'event_count') {
               total_events+=metricRecordsBatch[i].UNITVALUEINT;
+              console.log('total_events = ' + total_events);
             }
         }
     }
@@ -93,11 +94,8 @@ exports.handler = (event, context, callback) => {
         });
     });
 
-
-    if (process.env.SEND_ANONYMOUS_DATA === 'True') {
+    if (process.env.SEND_ANONYMOUS_DATA === 'True' && total_events > 0) {
         try {
-            console.log('sending anonymous usage data');
-
             let _metricsHelper = new MetricsHelper();
 
             let _metric = {

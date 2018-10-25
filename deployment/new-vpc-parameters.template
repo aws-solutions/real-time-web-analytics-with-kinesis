@@ -96,6 +96,9 @@ Parameters:
     AllowedValues:
       - Yes
       - No
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn-ami-hvm-x86_64-gp2'
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -114,6 +117,7 @@ Metadata:
           - AutoScalingMinSize
           - AutoScalingMaxSize
           - Key
+          - LatestAmiId
       - Label:
           default: "Optional: SSH Configuration"
         Parameters:
@@ -160,3 +164,5 @@ Metadata:
         default: Min Beacon Servers
       AutoScalingMaxSize:
         default: Max Beacon Servers
+      LatestAmiId:
+        default: Latest Ami Id

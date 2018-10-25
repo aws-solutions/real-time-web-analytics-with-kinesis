@@ -43,6 +43,7 @@ Resources:
     Properties:
       WebsiteConfiguration:
         IndexDocument: index.html
+        ErrorDocument: index.html
 
   AnalyticsBucket:
     Type: AWS::S3::Bucket
@@ -55,12 +56,59 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Principal: '*'
+          -
             Action:
-              - s3:GetObject
+                - "s3:GetObject"
+            Effect: "Allow"
             Resource:
-              - !Sub '${WebsiteBucket.Arn}/*'
-            Effect: Allow
+                - !Sub '${WebsiteBucket.Arn}/*'
+            Principal:
+                CanonicalUser: !GetAtt WebsiteOriginAccessIdentity.S3CanonicalUserId
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F16
+            reason: "This is a public facing website bucket should be permitted."
+
+  WebsiteOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub "access-identity-${WebsiteBucket}"
+
+  WebsiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: "Website distribution for solution"
+        Origins:
+            -
+              Id: S3-solution-website
+              DomainName: !Sub "${WebsiteBucket}.s3.${AWS::Region}.amazonaws.com"
+              S3OriginConfig:
+                  OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${WebsiteOriginAccessIdentity}"
+        DefaultCacheBehavior:
+            TargetOriginId: S3-solution-website
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+              - PUT
+              - POST
+              - PATCH
+              - DELETE
+            CachedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            ForwardedValues:
+                QueryString: 'false'
+            ViewerProtocolPolicy: redirect-to-https
+        IPV6Enabled: 'true'
+        ViewerCertificate:
+            CloudFrontDefaultCertificate: 'true'
+        Enabled: 'true'
+        HttpVersion: 'http2'
 
 # Cognito for Dashboard Users
   CognitoUserPool:
@@ -83,7 +131,7 @@ Resources:
               </p>
               <p>
               Please sign in to the dashboard with the user name and your temporary password provided above at: <br />
-              https://s3.${AWS::Region}.amazonaws.com/${WebsiteBucket}/index.html
+              https://${WebsiteDistribution.DomainName}/index.html
               </p>
           EmailSubject: "Your Real-Time Web Analytics Dashboard Login"
         UnusedAccountValidityDays: 7
@@ -96,7 +144,7 @@ Resources:
           </p>
           <p>
           Please sign in to the dashboard with the user name and temporary password provided above at: <br />
-          https://s3.${AWS::Region}.amazonaws.com/${WebsiteBucket}/index.html
+          https://${WebsiteDistribution.DomainName}/index.html
           </p>
       EmailVerificationSubject: "Your Real-Time Web Analytics Dashboard Login"
       Policies:
@@ -183,6 +231,11 @@ Resources:
                 Action:
                   - dynamodb:Query
                 Resource: !GetAtt MetricDetailsTable.Arn
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: "This is a access Policy."
 
   UnauthenticatedUserRole:
     Type: AWS::IAM::Role
@@ -212,6 +265,11 @@ Resources:
                   - mobileanalytics:PutEvents
                   - cognito-sync:*
                 Resource: !Sub 'arn:aws:cognito-identity:${AWS::Region}:${AWS::AccountId}:identitypool/${CognitoIdentityPool}'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: "This is a access Policy."
 
   WebCognitoUser:
     Type: AWS::Cognito::UserPoolUser
@@ -395,7 +453,7 @@ Resources:
                 files:
                   - /etc/init.d/aws-kinesis-agent
     Properties:
-      ImageId: !GetAtt GetAMI.amiId
+      ImageId: !Ref LatestAmiId
       InstanceType: !FindInMap [Sizing, !Ref NodeSize, InstanceType]
       KeyName: !If [SSHAccess, !Ref "Key", !Ref "AWS::NoValue"]
       IamInstanceProfile: !Ref WebServerInstanceProfile
@@ -471,6 +529,11 @@ Resources:
           FromPort: 80
           ToPort: 80
           CidrIp: !Ref BeaconSourceCIDR
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F1000
+            reason: "This is a public facing ALB and ingress from the internet should be permitted."
 
   WebServerNonSSLSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -786,6 +849,11 @@ Resources:
                   - kinesis:DescribeStream
                 Resource:
                   - !GetAtt 'OutputStream.Arn'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: "This is a access Policy."
 
   KinesisAnalyticsApp:
     Type: AWS::KinesisAnalytics::Application
@@ -1244,15 +1312,6 @@ Resources:
       ServiceToken: !GetAtt 'CustomResourceHelper.Arn'
       CustomResourceAction: GenerateUUID
 
-  GetAMI:
-    Type: Custom::LoadLambda
-    Properties:
-      ServiceToken: !GetAtt CustomResourceHelper.Arn
-      Region: !Ref AWS::Region
-      UUID: !GetAtt GenerateUUID.UUID
-      AMIName: amzn-ami-hvm-20*-x86_64-gp2
-      CustomResourceAction: GetAMI
-
   SeedDynamoTable:
     Type: Custom::LoadLambda
     Properties:
@@ -1484,7 +1543,7 @@ Resources:
 Outputs:
   DashboardUrl:
     Description: The URL to the Dashboard.
-    Value: !Sub 'https://s3.${AWS::Region}.amazonaws.com/${WebsiteBucket}/index.html'
+    Value: !Sub 'https://${WebsiteDistribution.DomainName}/index.html'
   DashboardUserName:
     Value: !Ref UserName
   DataGenerator:
