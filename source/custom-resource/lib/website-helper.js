@@ -20,8 +20,6 @@
 let AWS = require('aws-sdk');
 let s3 = new AWS.S3();
 const fs = require('fs');
-const _downloadKey = 'real-time-web-analytics-with-kinesis/latest/web-site-manifest.json';
-const _downloadLocation = '/tmp/web-site-manifest.json';
 
 /**
  * Helper function to interact with s3 hosted website for cfn custom resource.
@@ -46,18 +44,20 @@ let websiteHelper = (function() {
      */
     websiteHelper.prototype.copyWebSiteAssets = function(sourceS3Bucket, sourceS3prefix, websiteBucket,
         userPoolId, userPoolClientId, identityPoolId, metricsTableName, metricDetailsTableName, region, uuid, cb) {
-        console.log("Copying UI web site");
-        console.log(['source bucket:', sourceS3Bucket].join(' '));
-        console.log(['source prefix:', sourceS3prefix].join(' '));
-        console.log(['destination bucket:', websiteBucket].join(' '));
-        console.log(['user pool:', userPoolId].join(' '));
-        console.log(['user pool client:', userPoolClientId].join(' '));
-        console.log(['identity pool:', identityPoolId].join(' '));
-        console.log(['region:', region].join(' '));
-        console.log(['mt:', metricsTableName].join(''));
-        console.log(['mdt:', metricDetailsTableName].join(''));
+            console.log("Copying UI web site");
+            console.log(['source bucket:', sourceS3Bucket].join(' '));
+            console.log(['source prefix:', sourceS3prefix].join(' '));
+            console.log(['destination bucket:', websiteBucket].join(' '));
+            console.log(['user pool:', userPoolId].join(' '));
+            console.log(['user pool client:', userPoolClientId].join(' '));
+            console.log(['identity pool:', identityPoolId].join(' '));
+            console.log(['region:', region].join(' '));
+            console.log(['mt:', metricsTableName].join(''));
+            console.log(['mdt:', metricDetailsTableName].join(''));
+            const _downloadKey = sourceS3prefix+'/web-site-manifest.json';
+            const _downloadLocation = '/tmp/web-site-manifest.json';
 
-        downloadWebsiteManifest(sourceS3Bucket, _downloadKey, _downloadLocation, function(err, data) {
+            downloadWebsiteManifest(sourceS3Bucket, _downloadKey, _downloadLocation, function(err, data) {
             if (err) {
                 console.log(err);
                 return cb(err, null);

@@ -10,13 +10,13 @@
   "dependencies": {
     "amazon-cognito-identity-js": "^1.31.0",
     "async": "^2.6.0",
-    "aws-sdk": "*",
     "moment": "*",
     "node-uuid": "*",
     "password-generator": "*",
     "underscore": "*"
   },
   "devDependencies": {
+    "aws-sdk": "*",
     "chai": "*",
     "sinon": "*",
     "sinon-chai": "*",

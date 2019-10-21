@@ -1,12 +1,157 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: "(SO0038) - Real-time Web Analytics with Kinesis Analytics: This solution provides
     an auto scaled group of beacon servers and dashboard for real-time analytics of web site traffic."
-%%PARAMETERS%%
+Parameters:
+  UserName:
+    Description: The username of the user you want to create in Amazon Cognito for
+      dashboard access.
+    Type: String
+    AllowedPattern: ^(?=\s*\S).*$
+    ConstraintDescription: ' cannot be empty'
+  UserEmail:
+    Type: String
+    Description: "Email address for dashboard user. After successfully launching this
+        solution, you will receive an email with instructions to log in."
+    AllowedPattern: ^[_A-Za-z0-9-\+]+(\.[_A-Za-z0-9-]+)*@[A-Za-z0-9-]+(\.[A-Za-z0-9]+)*(\.[A-Za-z]{2,})$
+  EnableSSH:
+    Type: String
+    Description: "Enable SSH access to beacon servers? If you enable SSH access, then you must specify an SSH Keypair and SSH CIDR location."
+    Default: No
+    AllowedValues:
+      - Yes
+      - No
+  Key:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: "Keypair for logging into beacon web servers."
+  SSHLocation:
+    Type: String
+    Description: "IP address CIDR block that can access beacon web server instances (only required if enabling SSH)."
+    MaxLength: 18
+    AllowedPattern: "(?:^$|(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2}))"
+    ConstraintDescription: "must be a valid IP CIDR range of the form x.x.x.x/x."
+  BeaconSourceCIDR:
+    Type: String
+    Description: "IP address CIDR block that send events to the Beacon Server. This must allow web site user browsers to access the beacon servers."
+    Default: "0.0.0.0/0"
+    MinLength: 9
+    MaxLength: 18
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: "must be a valid IP CIDR range of the form x.x.x.x/x."
+  CorsOrig:
+    Type: String
+    Description: "This value will be returned by the API in the Access-Control-Allow-Origin header. A star (*) value will support any origin. We recommend specifying a specific origin (e.g. http://example.domain) to restrict cross-site access to your API."
+    Default: "*"
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: "Existing VPC for analytics beacon servers."
+  Subnet0:
+    Type: AWS::EC2::Subnet::Id
+    Description: "ALB public subnet #1 (must be Internet accessible)."
+  Subnet1:
+    Type: AWS::EC2::Subnet::Id
+    Description: "ALB public subnet #2 (must be Internet accessible) in a different AZ from ALB public subnet #1."
+  Subnet2:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Beacon web servers subnet #1 (must be able to connect to Firehose)."
+  Subnet3:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Beacon web servers subnet #2 (must be able to connect to Firehose) in a different AZ from beacon web servers subnet #1."
+  NodeSize:
+    Type: String
+    Description: "Number of requests per minute that each beacon node will support (50K = t2.medium, 100K = m5.large)."
+    Default: 50K
+    AllowedValues:
+      - 50K
+      - 100K
+  AutoScalingMinSize:
+    Type: Number
+    Description: Minimum number of beacon webservers (must be at least 2 for high availability).
+    Default: 2
+    MinValue: 1
+  AutoScalingMaxSize:
+    Type: Number
+    Description: Maximum number of beacon webservers.
+    Default: 6
+    MinValue: 1
+  CWDashboard:
+    Type: String
+    Description: "Create a CloudWatch dashboard for beacon server operational metrics?"
+    Default: Yes
+    AllowedValues:
+      - Yes
+      - No
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn-ami-hvm-x86_64-gp2'
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Web Dashboard Configuration
+        Parameters:
+          - UserName
+          - UserEmail
+      - Label:
+          default: "Beacon Web Server Configuration"
+        Parameters:
+          - CWDashboard
+          - BeaconSourceCIDR
+          - CorsOrig
+          - NodeSize
+          - AutoScalingMinSize
+          - AutoScalingMaxSize
+          - Key
+          - VPC
+          - Subnet0
+          - Subnet1
+          - Subnet2
+          - Subnet3
+          - LatestAmiId
+      - Label:
+          default: "Optional: SSH Configuration"
+        Parameters:
+          - EnableSSH
+          - SSHLocation
+    ParameterLabels:
+      UserName:
+        default: User Name
+      UserEmail:
+        default: User Email Address
+      EnableSSH:
+        default: Enable SSH?
+      Key:
+        default: SSH Keypair
+      SSHLocation:
+        default: Enable SSH From
+      CWDashboard:
+        default: CloudWatch Dashboard
+      BeaconSourceCIDR:
+        default: Enable beacon events from
+      CorsOrig:
+        default: CORS Origin
+      VPC:
+        default: Existing VPC
+      Subnet0:
+        default: "ALB Subnet #1"
+      Subnet1:
+        default: "ALB Subnet #2"
+      Subnet2:
+        default: "Beacon Servers Subnet #1"
+      Subnet3:
+        default: "Beacon Servers Subnet #2"
+      NodeSize:
+        default: Node Requests/Min
+      AutoScalingMinSize:
+        default: Min Beacon Servers
+      AutoScalingMaxSize:
+        default: Max Beacon Servers
+      LatestAmiId:
+        default: Latest Ami Id
 Mappings:
   SourceCode:
     General:
-      S3Bucket: '%%BUCKET_NAME%%'
-      KeyPrefix: real-time-web-analytics-with-kinesis/latest
+      S3Bucket: CODE_BUCKET
+      KeyPrefix: SOLUTION_NAME/CODE_VERSION
   Sizing:
     50K:
       InstanceType: t2.medium
@@ -35,8 +180,27 @@ Conditions:
   CreateCWDashboard: !Equals [!Ref CWDashboard, Yes]
 
 Resources:
-%%NETWORK_RESOURCES%%
 # Dashboard Resources
+
+  LogsBucket:
+    DeletionPolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: LogDeliveryWrite
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+      Tags:
+        -
+          Key: SolutionId
+          Value: SO0062
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "Loggin not enabled, this is the logs bucket for CloudFront and the other S3 buckets"
+
   WebsiteBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -44,10 +208,26 @@ Resources:
       WebsiteConfiguration:
         IndexDocument: index.html
         ErrorDocument: index.html
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LogsBucket
+        LogFilePrefix: container-bucket-access/
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W41
+            reason: "Encryption not enabled, this bucket host a website accessed through CloudFront"
 
   AnalyticsBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
+    Properties:
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LogsBucket
+        LogFilePrefix: container-bucket-access/
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
 
   WebsiteBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -81,6 +261,10 @@ Resources:
     Properties:
       DistributionConfig:
         Comment: "Website distribution for solution"
+        Logging:
+          IncludeCookies: false
+          Bucket: !GetAtt LogsBucket.DomainName
+          Prefix: cloudfront-logs/
         Origins:
             -
               Id: S3-solution-website
@@ -295,8 +479,8 @@ Resources:
     DependsOn: TargetGroup
     Properties:
       VPCZoneIdentifier:
-        - !Ref %%EC2_SUBNET0%%
-        - !Ref %%EC2_SUBNET1%%
+        - !Ref Subnet2
+        - !Ref Subnet3
       LaunchConfigurationName: !Ref AutoScalingGroupLaunchConfig
       MinSize: !Ref AutoScalingMinSize
       MaxSize: !Ref AutoScalingMaxSize
@@ -487,8 +671,8 @@ Resources:
     Properties:
       Scheme: internet-facing
       Subnets:
-        - !Ref %%ALB_SUBNET0%%
-        - !Ref %%ALB_SUBNET1%%
+        - !Ref Subnet0
+        - !Ref Subnet1
       SecurityGroups:
         - !GetAtt ALBSecurityGroup.GroupId
 
@@ -534,6 +718,8 @@ Resources:
         rules_to_suppress:
           - id: F1000
             reason: "This is a public facing ALB and ingress from the internet should be permitted."
+          - id: W36
+            reason: "This is a public facing ALB."
 
   WebServerNonSSLSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -548,7 +734,16 @@ Resources:
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
-
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W5
+            reason: "This is a public facing ALB and ingress from the internet should be permitted."
+          - id: W40
+            reason: "This is a public facing ALB and ingress from the internet should be permitted."
+          - id: W36
+            reason: "This is a public facing ALB and ingress from the internet should be permitted."
+            
   SSHAccessSecurityGroupRule:
     Condition: SSHAccess
     Type: AWS::EC2::SecurityGroupIngress
@@ -558,6 +753,11 @@ Resources:
       FromPort: 22
       ToPort: 22
       CidrIp: !Ref SSHLocation
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W36
+            reason: "This is a public facing ALB and ingress from the internet should be permitted."
 
   WebServerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -638,6 +838,12 @@ Resources:
                   - logs:DescribeLogStreams
                   - logs:PutLogEvents
                 Resource: '*'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "/* is required for logs"
+            
 
 # Metric Storage
   MetricTable:
@@ -653,6 +859,11 @@ Resources:
         ReadCapacityUnits: 1
         WriteCapacityUnits: 1
       TableName: !Sub '${AWS::StackName}-Metrics'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "explicit name required"
 
   MetricDetailsTable:
     Type: AWS::DynamoDB::Table
@@ -674,6 +885,11 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: ExpireTime
         Enabled: true
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "explicit name required"
 
   DDBScalingRole:
     Type: AWS::IAM::Role
@@ -709,6 +925,11 @@ Resources:
                   - "dynamodb:UpdateTable"
                 Resource:
                   - !GetAtt MetricDetailsTable.Arn
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "/* is required for logs"
 
   WriteCapacityScalableTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
@@ -792,7 +1013,12 @@ Resources:
                   - logs:PutLogEvents
                 Resource:
                   - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/kinesisfirehose/*:log-stream:*'
-
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "/* is required for logs"
+            
   DeliveryStream:
     Type: AWS::KinesisFirehose::DeliveryStream
     Properties:
@@ -811,6 +1037,11 @@ Resources:
       Name: !Sub '${AWS::StackName}-OutputStream'
       RetentionPeriodHours: 24
       ShardCount: 1
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "explicit name required"
 
   KinesisAnalyticsRole:
     Type: AWS::IAM::Role
@@ -854,6 +1085,8 @@ Resources:
         rules_to_suppress:
           - id: F3
             reason: "This is a access Policy."
+          - id: W11
+            reason: "* resource required for firehose"
 
   KinesisAnalyticsApp:
     Type: AWS::KinesisAnalytics::Application
@@ -1155,18 +1388,8 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       Code:
-        S3Bucket: !Sub
-          - ${Param1}-${AWS::Region}
-          - Param1: !FindInMap
-              - SourceCode
-              - General
-              - S3Bucket
-        S3Key: !Sub
-          - ${Param1}/wasa.zip
-          - Param1: !FindInMap
-              - SourceCode
-              - General
-              - KeyPrefix
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"], "wasa.zip"]]
       Environment:
         Variables:
           METRIC_TABLE: !Ref MetricTable
@@ -1188,7 +1411,7 @@ Resources:
       Handler: index.handler
       MemorySize: 256
       Role: !GetAtt ProcessMetricsLambdaRole.Arn
-      Runtime: nodejs6.10
+      Runtime: nodejs10.x
       Timeout: 300
 
 # Custom Resource
@@ -1196,18 +1419,8 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       Code:
-        S3Bucket: !Sub
-          - ${Param1}-${AWS::Region}
-          - Param1: !FindInMap
-              - SourceCode
-              - General
-              - S3Bucket
-        S3Key: !Sub
-          - ${Param1}/custom-resource-helper.zip
-          - Param1: !FindInMap
-              - SourceCode
-              - General
-              - KeyPrefix
+        S3Bucket: !Join ["-", [!FindInMap ["SourceCode", "General", "S3Bucket"], Ref: "AWS::Region"]]
+        S3Key: !Join ["/", [!FindInMap ["SourceCode", "General", "KeyPrefix"], "custom-resource.zip"]]
       Environment:
         Variables:
           SOLUTION_ID: !FindInMap
@@ -1227,7 +1440,7 @@ Resources:
       Handler: index.handler
       MemorySize: 256
       Role: !GetAtt 'CustomResourceHelperRole.Arn'
-      Runtime: nodejs6.10
+      Runtime: nodejs10.x
       Timeout: 300
 
   CustomResourceHelperRole:
@@ -1304,7 +1517,12 @@ Resources:
                   - dynamodb:PutItem
                 Resource:
                   - !GetAtt MetricTable.Arn
-
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: "/* is required for logs"
+            
 # Misc Custom Resource Callers
   GenerateUUID:
     Type: Custom::LoadLambda
@@ -1557,4 +1775,4 @@ Outputs:
     Value: !Sub http://${ApplicationLoadBalancer.DNSName}/beacon
   TestScriptUrl:
     Description: Link to download test-beacon.py for testing your beacon servers.
-    Value: !Sub 'https://s3.${AWS::Region}.amazonaws.com/${WebsiteBucket}/test-beacon.py'
+    Value: !Sub 'https://${WebsiteDistribution.DomainName}/test-beacon.py'

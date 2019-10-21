@@ -1,107 +1,58 @@
-#!/bin/bash
-
-# This script should be run from the repo's root directory
-# ./deployment/build-s3-dist.sh source-bucket-base-name
-# source-bucket-base-name should be the base name for the S3 bucket location where the template will source the Lambda code from.
-# The template will append '-[region_name]' to this bucket name.
-# For example: ./deployment/build-s3-dist.sh solutions
-# The template will then expect the source code to be located in the solutions-[region_name] bucket
-
 # Check to see if input has been provided:
-if [ -z "$1" ]; then
-    echo "Please provide the base source bucket name where the lambda code will eventually reside.\nFor example: ./build-s3-dist.sh solutions"
+if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+    echo "Please provide the base source bucket name, trademark approved solution name and version where the lambda code will eventually reside."
+    echo "For example: ./build-s3-dist.sh solutions trademarked-solution-name v1.0.0"
     exit 1
 fi
+ 
+echo "==Creating global-s3-assets & regional-s3-assets folders"
+[ -e ./global-s3-assets ] && rm -r ./global-s3-assets
+[ -e ./regional-s3-assets ] && rm -r ./regional-s3-assets
+mkdir -p ./global-s3-assets ./regional-s3-assets
 
-# Create `dist` directory
-echo "Starting to build distribution"
-echo "export initial_dir=`pwd`"
-export initial_dir=`pwd`
-export deployment_dir="$initial_dir/deployment"
-export dist_dir="$initial_dir/deployment/dist"
-echo "Clean up $dist_dir"
-rm -rf $dist_dir
-echo "mkdir -p $dist_dir"
-mkdir -p "$dist_dir"
+#TEMPALTE
+echo "==Copying CFN Template to regional-s3-assets/ "
+cp real-time-web-analytics-with-kinesis-existing-vpc.yaml ./global-s3-assets/real-time-web-analytics-with-kinesis-existing-vpc.template
+cp real-time-web-analytics-with-kinesis.yaml ./global-s3-assets/real-time-web-analytics-with-kinesis.template
+echo "==update CODE_BUCKET in template with $1"
+replace="s/CODE_BUCKET/$1/g"
+sed -i -e $replace ./global-s3-assets/real-time-web-analytics-with-kinesis-existing-vpc.template
+sed -i -e $replace ./global-s3-assets/real-time-web-analytics-with-kinesis.template
+echo "==update SOLUTION_NAME in template with $2"
+replace="s/SOLUTION_NAME/$2/g"
+sed -i -e $replace ./global-s3-assets/real-time-web-analytics-with-kinesis-existing-vpc.template
+sed -i -e $replace ./global-s3-assets/real-time-web-analytics-with-kinesis.template
+echo "==update CODE_VERSION in template with $3"
+replace="s/CODE_VERSION/$3/g"
+sed -i -e $replace ./global-s3-assets/real-time-web-analytics-with-kinesis-existing-vpc.template
+sed -i -e $replace ./global-s3-assets/real-time-web-analytics-with-kinesis.template
+# remove tmp file for MACs
+[ -e ./global-s3-assets/real-time-web-analytics-with-kinesis.template-e ] && rm -r ./global-s3-assets/real-time-web-analytics-with-kinesis.template-e
+[ -e ./global-s3-assets/real-time-web-analytics-with-kinesis-existing-vpc.template-e ] && rm -r ./global-s3-assets/real-time-web-analytics-with-kinesis-existing-vpc.template-e
 
-# Copy CFT & swap parameters
+#SOURCE CODE
+echo "==creating custom-resource deployment package"
+cd ../source/custom-resource/
+rm -rf node_modules/
+npm install --production
+rm package-lock.json
+zip -q -r9 ../../deployment/regional-s3-assets/custom-resource.zip *
 
-# Create templates for new vpc and existing VPC deployments
-echo "Inserting new VPC parameters"
-awk '/%%PARAMETERS%%/ { system ( "cat '$deployment_dir'/new-vpc-parameters.template" ) } \
-     !/%%PARAMETERS%%/ { print; }' $deployment_dir/real-time-web-analytics-with-kinesis.template \
-     > $dist_dir/real-time-web-analytics-with-kinesis.template
- echo "Inserting existing VPC parameters"
- awk '/%%PARAMETERS%%/ { system ( "cat '$deployment_dir'/existing-vpc-parameters.template" ) } \
-      !/%%PARAMETERS%%/ { print; }' $deployment_dir/real-time-web-analytics-with-kinesis.template \
-      > $dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template
-echo "Inserting new VPC resources"
-awk '/%%NETWORK_RESOURCES%%/ { system ( "cat '$deployment_dir'/new-vpc-resources.template" ) } \
-     !/%%NETWORK_RESOURCES%%/ { print; }' $dist_dir/real-time-web-analytics-with-kinesis.template \
-     > $dist_dir/real-time-web-analytics-with-kinesis.template.new
-mv $dist_dir/real-time-web-analytics-with-kinesis.template{.new,}
-echo "Removing VPC resources placeholder for existing VPCs"
-awk '!/%%NETWORK_RESOURCES%%/ { print; }' $dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template \
-     > $dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template.new
-mv $dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template{.new,}
+echo "==creating wasa deployment package"
+cd ../wasa/
+rm -rf node_modules/
+npm install --production
+rm package-lock.json
+zip -q -r9 ../../deployment/regional-s3-assets/wasa.zip *
 
-echo "Updating subnet references for new VPC template"
-replace="s/%%ALB_SUBNET0%%/Subnet0/g"
-echo "sed -i '' -e $replace $dist_dir/real-time-web-analytics-with-kinesis.template"
-sed -i '' -e $replace "$dist_dir/real-time-web-analytics-with-kinesis.template"
-replace="s/%%ALB_SUBNET1%%/Subnet1/g"
-echo "sed -i '' -e $replace $dist_dir/real-time-web-analytics-with-kinesis.template"
-sed -i '' -e $replace "$dist_dir/real-time-web-analytics-with-kinesis.template"
-replace="s/%%EC2_SUBNET0%%/Subnet0/g"
-echo "sed -i '' -e $replace $dist_dir/real-time-web-analytics-with-kinesis.template"
-sed -i '' -e $replace "$dist_dir/real-time-web-analytics-with-kinesis.template"
-replace="s/%%EC2_SUBNET1%%/Subnet1/g"
-echo "sed -i '' -e $replace $dist_dir/real-time-web-analytics-with-kinesis.template"
-sed -i '' -e $replace "$dist_dir/real-time-web-analytics-with-kinesis.template"
+echo "==creating wasa deployment package"
+cd ../load-testing/
+zip -q -r9 ../../deployment/regional-s3-assets/load-testing.zip *
 
-echo "Updating subnet references for existing VPC template"
-replace="s/%%ALB_SUBNET0%%/Subnet0/g"
+echo "==copy web_site and generate manifest"
+cd ../
+cp -r web_site ../deployment/regional-s3-assets/
 
-echo "sed -i '' -e $replace $dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template"
-sed -i '' -e $replace "$dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template"
-replace="s/%%ALB_SUBNET1%%/Subnet1/g"
-echo "sed -i '' -e $replace $dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template"
-sed -i '' -e $replace "$dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template"
-replace="s/%%EC2_SUBNET0%%/Subnet2/g"
-echo "sed -i '' -e $replace $dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template"
-sed -i '' -e $replace "$dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template"
-replace="s/%%EC2_SUBNET1%%/Subnet3/g"
-echo "sed -i '' -e $replace $dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template"
-sed -i '' -e $replace "$dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template"
-
-echo "Updating code source bucket in template with $1"
-replace="s/%%BUCKET_NAME%%/$1/g"
-echo "sed -i '' -e $replace $dist_dir/real-time-web-analytics-with-kinesis.template"
-sed -i '' -e $replace "$dist_dir/real-time-web-analytics-with-kinesis.template"
-sed -i '' -e $replace "$dist_dir/real-time-web-analytics-with-kinesis-existing-vpc.template"
-
-# Build WASA Zip
-cd "$initial_dir/source/wasa"
-npm install
-npm run build
-npm run zip
-cp "./dist/wasa.zip" "$dist_dir/wasa.zip"
-
-# Build Custom Resource
-echo "Building CFN custom resource helper Lambda function"
-cd "$initial_dir/source/custom-resource"
-npm install
-npm run build
-npm run zip
-cp "./dist/custom-resource-helper.zip" "$dist_dir/custom-resource-helper.zip"
-
-echo "Copying web site content to $deployment_dir/dist"
-cp -r "$initial_dir/source/web_site" "$dist_dir/"
-
-echo "Generating web site manifest"
-cd "$deployment_dir/manifest-generator"
-npm install
-node app
-
-echo "Completed building distribution"
-cd "$initial_dir"
+cd ../deployment/manifest-generator/
+npm install --production 
+node app.js --target ../regional-s3-assets/web_site --output ../regional-s3-assets/web_site/web-site-manifest.json 
