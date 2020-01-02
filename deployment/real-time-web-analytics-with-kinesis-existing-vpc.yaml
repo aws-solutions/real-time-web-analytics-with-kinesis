@@ -612,12 +612,14 @@ Resources:
             bb-return200s:
               command: !Join ["", ["echo '   Header set Access-Control-Allow-Origin \"", Ref: "CorsOrig", "\"' >> /etc/httpd/conf/httpd.conf"]]
             bc-return200s:
-              command: echo "   RewriteEngine on" >> /etc/httpd/conf/httpd.conf
+              command: echo "   Header set Access-Control-Allow-Headers \"clientid,event,page\"" >> /etc/httpd/conf/httpd.conf
             bd-return200s:
-              command: echo "   RewriteRule '^.*' '/var/www/html/index.html'" >> /etc/httpd/conf/httpd.conf
+              command: echo "   RewriteEngine on" >> /etc/httpd/conf/httpd.conf
             be-return200s:
+              command: echo "   RewriteRule '^.*' '/var/www/html/index.html'" >> /etc/httpd/conf/httpd.conf
+            bf-return200s:
               command: echo "</Directory>" >> /etc/httpd/conf/httpd.conf
-            be-rotate-logs:
+            bg-rotate-logs:
               command: sed -i 's/CustomLog logs\/access_log combined/CustomLog \"|\/usr\/sbin\/rotatelogs -p \/var\/log\/httpd\/remove_old_log.sh \/var\/log\/httpd\/access_log 1G\" combined/' /etc/httpd/conf/httpd.conf
             ca-add-data-header:
               command: sed -i 's/LogFormat "%h %l %u %t \\"%r\\" %>s %b \\"%{Referer}i\\"
