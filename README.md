@@ -19,6 +19,9 @@ The template will then expect the source code to be located in the solutions-[re
 ## CF template and Lambda function
 Located in deployment/dist
 
+## Collection of operational metrics
+
+This solution collects anonymous operational metrics to help AWS improve the quality of features of the solution. For more information, including how to disable this capability, please see the [implementation guide](https://docs.aws.amazon.com/solutions/latest/real-time-web-analytics-with-kinesis/appendix-d.html).
 
 ***
 
