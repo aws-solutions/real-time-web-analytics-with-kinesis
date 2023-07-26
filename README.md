@@ -1,3 +1,7 @@
+# Deprecation Notice
+
+This AWS Solution has been archived and is no longer maintained by AWS. To discover other solutions, please visit the [AWS Solutions Library](https://aws.amazon.com/solutions/).
+
 # Real-Time Web Analytics with Kinesis Data Analytics
 AWS Solution for analyzing web traffic in real-time using Kinesis Data Analytics, an S3 website, and Amazon Cognito.
 
